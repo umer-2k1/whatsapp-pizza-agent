@@ -67,20 +67,34 @@ export function verifyWebhook(req: Request, res: Response): void {
 export function handleWebhook(req: Request, res: Response): void {
   res.sendStatus(200);
 
+  const body = req.body as { object?: string; entry?: unknown[] };
+  console.log("[webhook] POST received", {
+    object: body?.object,
+    entries: body?.entry?.length ?? 0,
+  });
+
   const messages = extractTextMessages(req.body);
+
+  if (messages.length === 0) {
+    console.log("[webhook] No text messages in payload (status update or unsupported type)");
+    return;
+  }
 
   for (const message of messages) {
     if (!rememberMessageId(message.id)) {
+      console.log("[webhook] Duplicate message skipped:", message.id);
       continue;
     }
 
     const phone = sanitizePhone(message.from);
     const text = message.text!.body;
+    console.log(`[webhook] Message from ${phone}: ${text}`);
 
     void (async () => {
       try {
         await markMessageAsRead(message.id);
         const reply = await processMessage(phone, text);
+        console.log(`[webhook] Reply sent to ${phone}`);
         await sendTextMessage(phone, reply);
       } catch (error) {
         console.error("Failed to process message:", error);

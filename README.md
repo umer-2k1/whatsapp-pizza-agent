@@ -19,13 +19,41 @@ cp .env.example .env
 pnpm dev
 ```
 
-In a second terminal:
+> **Note:** This project uses `better-sqlite3`, a native Node addon. `package.json` includes `pnpm.onlyBuiltDependencies` so pnpm runs its install script. If you see a "Could not locate the bindings file" error, run `rm -rf node_modules && pnpm install` again.
+
+In a second terminal (only if not using `NGROK_AUTHTOKEN` or `WEBHOOK_URL`):
 
 ```bash
 ngrok http 3000
 ```
 
 Register the ngrok HTTPS URL + `/webhook` in the Meta WhatsApp dashboard.
+
+### Webhook URL (ngrok in a separate terminal)
+
+1. Start the server:
+   ```bash
+   pnpm dev
+   ```
+
+2. In **another terminal**, start ngrok:
+   ```bash
+   ngrok http 3000
+   ```
+
+The server auto-detects ngrok via its local API (`http://127.0.0.1:4040`) and prints the **HTTPS** webhook URL:
+
+```
+Webhook URL (register in Meta): https://abc123.ngrok-free.app/webhook
+```
+
+If ngrok starts after the server, either restart `pnpm dev` or run:
+
+```bash
+curl http://localhost:3000/health
+```
+
+For the full step-by-step WhatsApp setup and testing guide, see [docs/SETUP_AND_TESTING_GUIDE.md](docs/SETUP_AND_TESTING_GUIDE.md).
 
 ## Environment variables
 
@@ -37,6 +65,8 @@ Register the ngrok HTTPS URL + `/webhook` in the Meta WhatsApp dashboard.
 | `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp phone number ID from Meta dashboard |
 | `WHATSAPP_VERIFY_TOKEN` | Custom verify token for webhook handshake |
 | `DATABASE_PATH` | SQLite database path (default: `./data/orders.db`) |
+| `WEBHOOK_URL` | Optional manual override for Meta webhook URL |
+| `NGROK_API_URL` | ngrok local API (default: `http://127.0.0.1:4040`) |
 
 ## WhatsApp Cloud API setup
 
