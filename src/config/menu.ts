@@ -12,8 +12,53 @@ export const MENU: MenuItem[] = [
   { name: "Veggie", price: 1100 },
 ];
 
+export const MENU_ROW_IDS: Record<string, string> = {
+  margherita: "Margherita",
+  pepperoni: "Pepperoni",
+  bbq_chicken: "BBQ Chicken",
+  veggie: "Veggie",
+};
+
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
+}
+
+export function resolveMenuSelection(input: string): string | null {
+  const trimmed = input.trim();
+  const fromId = MENU_ROW_IDS[trimmed.toLowerCase()];
+  if (fromId) return fromId;
+
+  const menuItem = getMenuItem(trimmed);
+  return menuItem?.name ?? null;
+}
+
+export interface MenuListPayload {
+  header?: string;
+  body: string;
+  footer?: string;
+  buttonLabel: string;
+  rows: Array<{ id: string; title: string; description: string }>;
+}
+
+export function buildMenuListPayload(options?: {
+  header?: string;
+  body?: string;
+  footer?: string;
+}): MenuListPayload {
+  const idForName = (name: string): string =>
+    Object.entries(MENU_ROW_IDS).find(([, n]) => n === name)?.[0] ?? name.toLowerCase();
+
+  return {
+    header: options?.header ?? "🍕 Pizza Menu",
+    body: options?.body ?? "Tap View Menu and pick a pizza:",
+    footer: options?.footer ?? "All prices in PKR",
+    buttonLabel: "View Menu",
+    rows: MENU.map((item) => ({
+      id: idForName(item.name),
+      title: item.name,
+      description: `${item.price} PKR`,
+    })),
+  };
 }
 
 export function getMenuItem(name: string): MenuItem | undefined {

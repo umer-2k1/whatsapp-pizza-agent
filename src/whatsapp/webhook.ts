@@ -1,8 +1,9 @@
 import type { Request, Response } from "express";
 import { env } from "../config/env.js";
+import { resolveMenuSelection } from "../config/menu.js";
 import { processMessage } from "../services/conversationService.js";
 import { sanitizePhone } from "../utils/sanitize.js";
-import { markMessageAsRead, sendTextMessage } from "./client.js";
+import { markMessageAsRead, sendBotReply, sendTextMessage } from "./client.js";
 
 const processedMessageIds = new Set<string>();
 const MAX_PROCESSED_IDS = 1000;
@@ -19,20 +20,54 @@ function rememberMessageId(id: string): boolean {
   return true;
 }
 
-interface WhatsAppTextMessage {
+interface IncomingMessage {
+  id: string;
+  from: string;
+  text: string;
+}
+
+interface WhatsAppMessage {
   id: string;
   from: string;
   type: string;
   text?: { body: string };
+  interactive?: {
+    type: string;
+    list_reply?: { id: string; title: string };
+    button_reply?: { id: string; title: string };
+  };
+  button?: { text: string; payload: string };
 }
 
-function extractTextMessages(body: unknown): WhatsAppTextMessage[] {
-  const messages: WhatsAppTextMessage[] = [];
+function extractMessageText(message: WhatsAppMessage): string | null {
+  if (message.type === "text" && message.text?.body) {
+    return message.text.body;
+  }
+
+  if (message.type === "interactive" && message.interactive) {
+    const { interactive } = message;
+    if (interactive.type === "list_reply" && interactive.list_reply) {
+      return interactive.list_reply.id;
+    }
+    if (interactive.type === "button_reply" && interactive.button_reply) {
+      return interactive.button_reply.id;
+    }
+  }
+
+  if (message.type === "button" && message.button) {
+    return message.button.payload || message.button.text;
+  }
+
+  return null;
+}
+
+function extractIncomingMessages(body: unknown): IncomingMessage[] {
+  const messages: IncomingMessage[] = [];
   const payload = body as {
     entry?: Array<{
       changes?: Array<{
         value?: {
-          messages?: WhatsAppTextMessage[];
+          messages?: WhatsAppMessage[];
         };
       }>;
     }>;
@@ -41,9 +76,15 @@ function extractTextMessages(body: unknown): WhatsAppTextMessage[] {
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       for (const message of change.value?.messages ?? []) {
-        if (message.type === "text" && message.text?.body) {
-          messages.push(message);
-        }
+        const rawText = extractMessageText(message);
+        if (!rawText) continue;
+
+        const resolved = resolveMenuSelection(rawText) ?? rawText;
+        messages.push({
+          id: message.id,
+          from: message.from,
+          text: resolved,
+        });
       }
     }
   }
@@ -73,7 +114,7 @@ export function handleWebhook(req: Request, res: Response): void {
     entries: body?.entry?.length ?? 0,
   });
 
-  const messages = extractTextMessages(req.body);
+  const messages = extractIncomingMessages(req.body);
 
   if (messages.length === 0) {
     console.log("[webhook] No text messages in payload (status update or unsupported type)");
@@ -87,15 +128,15 @@ export function handleWebhook(req: Request, res: Response): void {
     }
 
     const phone = sanitizePhone(message.from);
-    const text = message.text!.body;
+    const text = message.text;
     console.log(`[webhook] Message from ${phone}: ${text}`);
 
     void (async () => {
       try {
         await markMessageAsRead(message.id);
         const reply = await processMessage(phone, text);
-        console.log(`[webhook] Reply sent to ${phone}`);
-        await sendTextMessage(phone, reply);
+        await sendBotReply(phone, reply);
+        console.log(`[webhook] Reply sent to ${phone} (${reply.kind})`);
       } catch (error) {
         console.error("Failed to process message:", error);
         try {

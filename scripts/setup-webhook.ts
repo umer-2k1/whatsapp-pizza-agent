@@ -6,7 +6,9 @@ dotenv.config();
 const APP_ID = process.env.WHATSAPP_APP_ID ?? "1042153305136627";
 const APP_SECRET = process.env.WHATSAPP_APP_SECRET;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PORT = Number(process.env.PORT ?? 3000);
+const GRAPH_API = "https://graph.facebook.com/v25.0";
 
 async function checkUrl(url: string, label: string): Promise<boolean> {
   try {
@@ -69,6 +71,73 @@ Run these in separate terminals BEFORE pnpm setup:webhook:
   console.log("Pre-flight passed.\n");
 }
 
+async function resolveWabaId(appAccessToken: string): Promise<string> {
+  if (!ACCESS_TOKEN) {
+    throw new Error("Missing WHATSAPP_ACCESS_TOKEN in .env (needed to find WABA ID)");
+  }
+
+  const res = await fetch(
+    `${GRAPH_API}/debug_token?input_token=${encodeURIComponent(ACCESS_TOKEN)}&access_token=${appAccessToken}`
+  );
+  const data = (await res.json()) as {
+    data?: { granular_scopes?: Array<{ scope: string; target_ids?: string[] }> };
+    error?: { message: string };
+  };
+
+  if (!res.ok) {
+    throw new Error(data.error?.message ?? "Failed to resolve WABA ID from access token");
+  }
+
+  const wabaScope = data.data?.granular_scopes?.find((s) =>
+    s.scope.startsWith("whatsapp_business_")
+  );
+  const wabaId = wabaScope?.target_ids?.[0];
+  if (!wabaId) {
+    throw new Error("Could not find WABA ID in token scopes");
+  }
+
+  return wabaId;
+}
+
+async function subscribeAppToWaba(wabaId: string): Promise<void> {
+  if (!ACCESS_TOKEN) {
+    throw new Error("Missing WHATSAPP_ACCESS_TOKEN in .env");
+  }
+
+  console.log("Subscribing app to WhatsApp Business Account...");
+  console.log("  WABA ID:", wabaId);
+  console.log("  App ID:", APP_ID);
+
+  const check = await fetch(`${GRAPH_API}/${wabaId}/subscribed_apps`, {
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  const before = (await check.json()) as {
+    data?: Array<{ whatsapp_business_api_data?: { id: string; name: string } }>;
+  };
+  const alreadySubscribed = before.data?.some(
+    (entry) => entry.whatsapp_business_api_data?.id === APP_ID
+  );
+
+  if (alreadySubscribed) {
+    console.log("  Already subscribed to WABA ✓\n");
+    return;
+  }
+
+  const res = await fetch(`${GRAPH_API}/${wabaId}/subscribed_apps`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  const body = await res.text();
+  console.log("  WABA subscribe response:", res.status, body);
+
+  if (!res.ok) {
+    console.error("\nFailed to subscribe app to WABA — incoming messages will NOT reach your webhook.");
+    process.exit(1);
+  }
+
+  console.log("  App subscribed to WABA ✓\n");
+}
+
 async function main(): Promise<void> {
   if (!APP_SECRET) {
     console.error(`
@@ -108,7 +177,7 @@ Then add to .env:
   });
 
   const res = await fetch(
-    `https://graph.facebook.com/v21.0/${APP_ID}/subscriptions`,
+    `${GRAPH_API}/${APP_ID}/subscriptions`,
     { method: "POST", body: params }
   );
 
@@ -122,8 +191,11 @@ Then add to .env:
     process.exit(1);
   }
 
+  const wabaId = await resolveWabaId(appAccessToken);
+  await subscribeAppToWaba(wabaId);
+
   const check = await fetch(
-    `https://graph.facebook.com/v21.0/${APP_ID}/subscriptions?access_token=${appAccessToken}`
+    `${GRAPH_API}/${APP_ID}/subscriptions?access_token=${appAccessToken}`
   );
   console.log("\nCurrent subscriptions:");
   console.log(JSON.stringify(await check.json(), null, 2));
