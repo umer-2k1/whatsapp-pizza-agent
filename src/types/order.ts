@@ -33,6 +33,7 @@ export interface PendingOrder {
   customerName?: string;
   address?: string;
   selectedItem?: string;
+  naturalOrderQueue?: string[];
   awaiting: "name" | "address" | "item" | "quantity" | "add_more" | null;
   updatedAt: number;
 }

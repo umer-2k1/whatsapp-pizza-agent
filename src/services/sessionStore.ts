@@ -1,7 +1,7 @@
 import type { ChatMessage, PendingOrder } from "../types/order.js";
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
-const MAX_HISTORY = 6;
+const MAX_HISTORY = 10;
 
 const pendingOrders = new Map<string, PendingOrder>();
 const chatHistory = new Map<string, ChatMessage[]>();

@@ -1,5 +1,5 @@
 import { buildMenuListPayload } from "../config/menu.js";
-import type { BotReply } from "../types/reply.js";
+import type { BotReply, ProcessResult } from "../types/reply.js";
 import { env } from "../config/env.js";
 
 const WHATSAPP_API_URL = `https://graph.facebook.com/v25.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
@@ -116,6 +116,13 @@ export async function sendBotReply(to: string, reply: BotReply): Promise<void> {
   }
 
   await sendInteractiveButtonMessage(to, reply);
+}
+
+export async function sendBotReplies(to: string, result: ProcessResult): Promise<void> {
+  const replies = Array.isArray(result) ? result : [result];
+  for (const reply of replies) {
+    await sendBotReply(to, reply);
+  }
 }
 
 export async function markMessageAsRead(messageId: string): Promise<void> {

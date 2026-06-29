@@ -1,3 +1,5 @@
+import { DELIVERY_ESTIMATE, SHOP_NAME } from "../config/shop.js";
+import type { CreateOrderInput, Order, OrderItemInput } from "../types/order.js";
 import {
   calculateTotal,
   getMenuItem,
@@ -10,7 +12,6 @@ import {
   insertOrder,
   orderIdExists,
 } from "../db/orders.js";
-import type { CreateOrderInput, Order, OrderItemInput } from "../types/order.js";
 import { generateOrderId } from "../utils/orderId.js";
 
 export class OrderValidationError extends Error {
@@ -22,12 +23,14 @@ export class OrderValidationError extends Error {
 
 export function validateItems(items: OrderItemInput[]): void {
   if (!items || items.length === 0) {
-    throw new OrderValidationError("Which pizza would you like? 🍕");
+    throw new OrderValidationError("What are you in the mood for? 🍕");
   }
 
   for (const item of items) {
     if (!isValidMenuItem(item.name)) {
-      throw new OrderValidationError("We only serve pizzas from our menu 🍕");
+      throw new OrderValidationError(
+        "Ah, we only do the pizzas on our menu — want me to send it over?"
+      );
     }
   }
 }
@@ -47,11 +50,11 @@ export function createOrder(input: CreateOrderInput): Order {
   const address = input.address?.trim();
 
   if (!customerName) {
-    throw new OrderValidationError("What's your name for the order?");
+    throw new OrderValidationError("What name should I put on the order?");
   }
 
   if (!address) {
-    throw new OrderValidationError("Please share your delivery address 📍");
+    throw new OrderValidationError("Where should we deliver it? Drop your address 📍");
   }
 
   validateItems(input.items);
@@ -87,21 +90,83 @@ export function getOrder(params: {
 }
 
 export function formatItemsSummary(items: Order["items"]): string {
-  return items
-    .map((item) => `${item.quantity}x ${item.name} Pizza`)
-    .join(", ");
+  return items.map((item) => `${item.quantity}x ${item.name}`).join(", ");
+}
+
+function parseOrderDate(createdAt: string): Date {
+  const normalized = createdAt.includes("T")
+    ? createdAt
+    : `${createdAt.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function formatPlacedAt(createdAt: string): string {
+  return new Intl.DateTimeFormat("en-PK", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Karachi",
+  }).format(parseOrderDate(createdAt));
+}
+
+function formatExpectedDeliveryTime(createdAt: string): string {
+  const placed = parseOrderDate(createdAt);
+  const eta = new Date(placed.getTime() + 60 * 60 * 1000);
+  const etaTime = new Intl.DateTimeFormat("en-PK", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Karachi",
+  }).format(eta);
+
+  return `~${etaTime} (${DELIVERY_ESTIMATE})`;
+}
+
+export function formatOrderReceipt(order: Order): string {
+  const itemLines = order.items.map((item) => {
+    const lineTotal = item.price * item.quantity;
+    return `  • ${item.quantity}x *${item.name}*\n    ${item.price} PKR each → *${lineTotal} PKR*`;
+  });
+
+  return [
+    `🍕 *${SHOP_NAME}*`,
+    `─────────────────`,
+    `*ORDER RECEIPT*`,
+    `─────────────────`,
+    "",
+    `🧾 *Order ID:* ${order.order_id}`,
+    `✅ *Status:* ${order.status}`,
+    "",
+    `👤 *Customer:* ${order.customer_name}`,
+    `📍 *Delivery address:*\n   ${order.address}`,
+    "",
+    `*Items ordered:*`,
+    ...itemLines,
+    "",
+    `💰 *Order total:* ${order.total} PKR`,
+    "",
+    `🕐 *Placed on:* ${formatPlacedAt(order.created_at)}`,
+    `🛵 *Expected delivery:* ${formatExpectedDeliveryTime(order.created_at)}`,
+    `─────────────────`,
+    `Thanks for ordering! 😊`,
+  ].join("\n");
 }
 
 export function formatCartSummary(items: OrderItemInput[]): string {
   if (items.length === 0) {
-    return "Your cart is empty.";
+    return "🛒 Nothing in the cart yet.";
   }
 
   const lines = items.map((item) => {
     const qty = item.quantity && item.quantity > 0 ? item.quantity : 1;
     const menuItem = getMenuItem(item.name);
     const lineTotal = menuItem ? menuItem.price * qty : 0;
-    return `• ${qty}x ${item.name} — ${lineTotal} PKR`;
+    return `• ${qty}x *${item.name}* — ${lineTotal} PKR`;
   });
 
   const total = items.reduce((sum, item) => {
@@ -110,37 +175,33 @@ export function formatCartSummary(items: OrderItemInput[]): string {
     return sum + (menuItem ? menuItem.price * qty : 0);
   }, 0);
 
-  return ["Your order so far:", ...lines, "", `Subtotal: ${total} PKR`].join("\n");
+  return ["🛒 *So far you've got:*", ...lines, "", `*Subtotal:* ${total} PKR`].join("\n");
+}
+
+export function formatOrderIntro(order: Order): string {
+  const firstName = order.customer_name.split(" ")[0];
+  return `✅ Perfect, *${firstName}*! Your order is confirmed 🍕\nHere are your order details 👇`;
 }
 
 export function formatOrderConfirmation(order: Order): string {
-  return [
-    "🍕 Order Confirmed!",
-    "",
-    `Order ID: ${order.order_id}`,
-    `Name: ${order.customer_name}`,
-    `Items: ${formatItemsSummary(order.items)}`,
-    `Total: ${order.total} PKR`,
-    `Address: ${order.address}`,
-    "Delivery: 1 hour ⏱️",
-    "",
-    "Your pizza is being prepared! 🍕🔥",
-  ].join("\n");
+  return [formatOrderIntro(order), "", formatOrderReceipt(order)].join("\n");
 }
 
 export function formatOrderDetails(order: Order): string {
+  return formatOrderReceipt(order);
+}
+
+export function formatDeliveryEta(order: Order): string {
+  const firstName = order.customer_name.split(" ")[0];
   return [
-    "📦 Order Details",
+    `Hey *${firstName}*! Your order is on the way 🛵`,
     "",
-    `Order ID: ${order.order_id}`,
-    `Name: ${order.customer_name}`,
-    `Items: ${formatItemsSummary(order.items)}`,
-    `Total: ${order.total} PKR`,
-    `Address: ${order.address}`,
-    `Status: ${order.status}`,
-    `Placed: ${order.created_at}`,
-    "Delivery: 1 hour ⏱️",
+    formatOrderReceipt(order),
   ].join("\n");
+}
+
+export function formatNoOrderFound(): string {
+  return "Hmm, I'm not seeing an order on this number yet 🤔 Want to place one? 🍕";
 }
 
 export function getMissingField(
@@ -157,10 +218,15 @@ export function getMissingField(
 export function getMissingFieldPrompt(field: "item" | "name" | "address"): string {
   switch (field) {
     case "item":
-      return "Which pizza would you like? 🍕";
+      return "What are you in the mood for? 🍕";
     case "name":
-      return "What's your name for the order?";
+      return "What name should I put on the order? 😊";
     case "address":
-      return "Please share your delivery address 📍";
+      return "Where should we deliver it? Drop your address 📍";
   }
+}
+
+export function isConfirmingPrefill(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  return ["yes", "yep", "yeah", "correct", "same", "ok", "okay", "sure"].includes(lower);
 }

@@ -10,6 +10,8 @@ export const MENU: MenuItem[] = [
   { name: "Pepperoni", price: 1500 },
   { name: "BBQ Chicken", price: 1700 },
   { name: "Veggie", price: 1100 },
+  { name: "Chicken Tikka", price: 1600 },
+  { name: "Meat Lovers", price: 1800 },
 ];
 
 export const MENU_ROW_IDS: Record<string, string> = {
@@ -17,6 +19,8 @@ export const MENU_ROW_IDS: Record<string, string> = {
   pepperoni: "Pepperoni",
   bbq_chicken: "BBQ Chicken",
   veggie: "Veggie",
+  chicken_tikka: "Chicken Tikka",
+  meat_lovers: "Meat Lovers",
 };
 
 function normalizeName(name: string): string {
@@ -103,6 +107,7 @@ export const RECOMMENDATION_TRIGGERS = [
 const QTY_BUTTON_PREFIX = "qty_";
 export const ADD_ANOTHER_ID = "add_another";
 export const DONE_ORDER_ID = "done_order";
+export const SHOW_MENU_ID = "show_menu";
 
 export function quantityButtonId(qty: number): string {
   return `${QTY_BUTTON_PREFIX}${qty}`;

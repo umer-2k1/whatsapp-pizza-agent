@@ -12,6 +12,8 @@ const envSchema = z.object({
   DATABASE_PATH: z.string().default("./data/orders.db"),
   WEBHOOK_URL: z.string().url().optional(),
   NGROK_API_URL: z.string().url().default("http://127.0.0.1:4040"),
+  SHOP_NAME: z.string().default("Slice House Pizza"),
+  STAFF_NAME: z.string().default("Ali"),
 });
 
 export const env = envSchema.parse(process.env);

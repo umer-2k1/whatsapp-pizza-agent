@@ -9,6 +9,8 @@ export type BotReply =
       footer?: string;
     };
 
+export type ProcessResult = BotReply | BotReply[];
+
 export function menuListReply(
   body: string,
   options?: { header?: string; footer?: string }

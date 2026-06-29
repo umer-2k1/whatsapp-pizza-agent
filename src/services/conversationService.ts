@@ -7,15 +7,29 @@ import {
   parseQuantityInput,
   quantityButtonId,
   resolveMenuSelection,
+  SHOW_MENU_ID,
 } from "../config/menu.js";
+import { SHOP_NAME } from "../config/shop.js";
+import {
+  classifyIntent,
+  extractPizzaNamesFromMessage,
+  isAcceptingMenuOffer,
+  isCartAction,
+  wasMenuOfferedRecently,
+  type Intent,
+} from "./intentService.js";
 import {
   createOrder,
   formatCartSummary,
-  formatOrderConfirmation,
+  formatDeliveryEta,
+  formatNoOrderFound,
+  formatOrderIntro,
+  formatOrderReceipt,
   formatOrderDetails,
   getMissingField,
   getMissingFieldPrompt,
   getOrder,
+  isConfirmingPrefill,
   OrderValidationError,
 } from "./orderService.js";
 import {
@@ -25,61 +39,22 @@ import {
   getPendingOrder,
   setPendingOrder,
 } from "./sessionStore.js";
-import type { OrderItemInput, PendingOrder } from "../types/order.js";
-import type { BotReply } from "../types/reply.js";
+import type { OrderItemInput, PendingOrder, ChatMessage } from "../types/order.js";
+import type { BotReply, ProcessResult } from "../types/reply.js";
 import { buttonReply, menuListReply, textReply } from "../types/reply.js";
 import { sanitizeInput } from "../utils/sanitize.js";
 
 const ORDER_ID_PATTERN = /\bPZ\d{6}\b/i;
-
-const MENU_TRIGGERS = [
-  "menu",
-  "show menu",
-  "view menu",
-  "what's on the menu",
-  "whats on the menu",
-  "see menu",
-  "pizza menu",
-];
-
-const GREETING_TRIGGERS = ["hi", "hello", "hey", "salam", "assalam"];
 
 function extractOrderId(text: string): string | undefined {
   const match = text.match(ORDER_ID_PATTERN);
   return match ? match[0].toUpperCase() : undefined;
 }
 
-function looksLikeTrackingRequest(text: string): boolean {
-  const lower = text.toLowerCase();
-  return (
-    extractOrderId(text) !== undefined ||
-    lower.includes("where is my order") ||
-    lower.includes("track my order") ||
-    lower.includes("order status") ||
-    lower.includes("track order")
-  );
-}
-
-export function looksLikeMenuRequest(text: string): boolean {
-  const lower = text.toLowerCase().trim();
-  return MENU_TRIGGERS.some(
-    (trigger) => lower === trigger || lower.includes(trigger)
-  );
-}
-
-function looksLikeGreeting(text: string): boolean {
-  const lower = text.toLowerCase().trim();
-  return GREETING_TRIGGERS.some(
-    (g) => lower === g || lower.startsWith(`${g} `) || lower.startsWith(`${g}!`)
-  );
-}
-
 function normalizeUserMessage(rawMessage: string): string {
   const sanitized = sanitizeInput(rawMessage);
   if (!sanitized) return "";
-
-  const menuSelection = resolveMenuSelection(sanitized);
-  return menuSelection ?? sanitized;
+  return sanitized;
 }
 
 function emptyPending(overrides?: Partial<PendingOrder>): PendingOrder {
@@ -114,15 +89,15 @@ function addItemToCart(
 }
 
 function itemSelectionReply(): BotReply {
-  return menuListReply("Tap View Menu and pick a pizza:", {
-    header: "🍕 Pizza Menu",
+  return menuListReply("Sure thing! 👇 Tap *View Menu* to pick your pizza:", {
+    header: `🍕 ${SHOP_NAME}`,
     footer: "All prices in PKR",
   });
 }
 
 function quantityReply(pizzaName: string): BotReply {
   return buttonReply(
-    `How many ${pizzaName} pizzas would you like?`,
+    `Nice choice! 🍕 How many *${pizzaName}* pizzas?`,
     [
       { id: quantityButtonId(1), title: "1" },
       { id: quantityButtonId(2), title: "2" },
@@ -134,13 +109,38 @@ function quantityReply(pizzaName: string): BotReply {
 
 function addMoreReply(items: OrderItemInput[]): BotReply {
   return buttonReply(
-    `${formatCartSummary(items)}\n\nAdd another pizza or finish ordering?`,
+    `${formatCartSummary(items)}\n\nAdd another or finish up? 👇`,
     [
       { id: ADD_ANOTHER_ID, title: "Add another" },
       { id: DONE_ORDER_ID, title: "Done ordering" },
     ],
     { header: "🛒 Your cart" }
   );
+}
+
+function menuOfferButton(): BotReply {
+  return buttonReply("Want to see the full menu? 🍕", [
+    { id: SHOW_MENU_ID, title: "View Menu" },
+  ]);
+}
+
+function shouldShowMenu(
+  message: string,
+  intent: Intent,
+  history: ChatMessage[]
+): boolean {
+  if (intent === "show_menu" || intent === "menu_request") return true;
+
+  if (!isAcceptingMenuOffer(message)) return false;
+
+  if (wasMenuOfferedRecently(history)) return true;
+
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  if (lastUser && classifyIntent(lastUser.content) === "recommendation") {
+    return true;
+  }
+
+  return false;
 }
 
 function resumeItemSelection(phone: string, pending: PendingOrder): BotReply {
@@ -153,7 +153,49 @@ function resumeItemSelection(phone: string, pending: PendingOrder): BotReply {
   return itemSelectionReply();
 }
 
-function attemptCreateFromPending(phone: string, pending: PendingOrder): BotReply {
+function startOrdering(phone: string): BotReply {
+  const existing = getPendingOrder(phone);
+  setPendingOrder(
+    phone,
+    emptyPending({
+      items: existing?.items ?? [],
+      customerName: existing?.customerName,
+      address: existing?.address,
+    })
+  );
+  return itemSelectionReply();
+}
+
+function startNaturalOrder(phone: string, pizzaNames: string[]): ProcessResult {
+  const existing = getPendingOrder(phone);
+  const previousOrder = getOrder({ phone });
+
+  setPendingOrder(phone, {
+    items: [],
+    awaiting: "quantity",
+    selectedItem: pizzaNames[0],
+    naturalOrderQueue: pizzaNames.slice(1),
+    customerName: previousOrder?.customer_name ?? existing?.customerName,
+    address: previousOrder?.address ?? existing?.address,
+    updatedAt: Date.now(),
+  });
+
+  const replies: BotReply[] = [
+    textReply(`Got it! 👍 Let's get those for you.`),
+    quantityReply(pizzaNames[0]!),
+  ];
+
+  return replies;
+}
+
+function orderConfirmationReplies(order: Parameters<typeof formatOrderReceipt>[0]): ProcessResult {
+  return [
+    textReply(formatOrderIntro(order)),
+    textReply(formatOrderReceipt(order)),
+  ];
+}
+
+function attemptCreateFromPending(phone: string, pending: PendingOrder): ProcessResult {
   try {
     const order = createOrder({
       phone,
@@ -162,7 +204,7 @@ function attemptCreateFromPending(phone: string, pending: PendingOrder): BotRepl
       items: pending.items,
     });
     clearPendingOrder(phone);
-    return textReply(formatOrderConfirmation(order));
+    return orderConfirmationReplies(order);
   } catch (error) {
     if (error instanceof OrderValidationError) {
       const field = getMissingField(
@@ -181,9 +223,9 @@ function attemptCreateFromPending(phone: string, pending: PendingOrder): BotRepl
   }
 }
 
-function handlePendingSession(phone: string, message: string): BotReply | null {
+function handlePendingSession(phone: string, message: string): ProcessResult | null {
   const pending = getPendingOrder(phone);
-  if (!pending || !pending.awaiting) return null;
+  if (!pending?.awaiting) return null;
 
   switch (pending.awaiting) {
     case "item": {
@@ -212,10 +254,26 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
       }
 
       const items = addItemToCart(pending.items, pizzaName, qty);
+
+      const queue = pending.naturalOrderQueue ?? [];
+      if (queue.length > 0) {
+        const nextPizza = queue[0];
+        setPendingOrder(phone, {
+          ...pending,
+          items,
+          selectedItem: nextPizza,
+          naturalOrderQueue: queue.slice(1),
+          awaiting: "quantity",
+          updatedAt: Date.now(),
+        });
+        return quantityReply(nextPizza!);
+      }
+
       setPendingOrder(phone, {
         ...pending,
         items,
         selectedItem: undefined,
+        naturalOrderQueue: undefined,
         awaiting: "add_more",
         updatedAt: Date.now(),
       });
@@ -261,6 +319,19 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
         });
 
         if (nextField === "item") return itemSelectionReply();
+
+        if (nextField === "name" && pending.customerName) {
+          return textReply(
+            `Perfect! Order for *${pending.customerName}* like last time? 😊 (or type a new name)`
+          );
+        }
+
+        if (nextField === "address" && pending.address) {
+          return textReply(
+            `Great! Deliver to *${pending.address}* like last time? 📍 (or type a new address)`
+          );
+        }
+
         return textReply(getMissingFieldPrompt(nextField));
       }
 
@@ -268,11 +339,15 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
     }
 
     case "name": {
+      const confirming = isConfirmingPrefill(message);
+      const finalName = confirming && pending.customerName ? pending.customerName : message;
+
       const updated: PendingOrder = {
         ...pending,
-        customerName: message,
+        customerName: finalName,
         updatedAt: Date.now(),
       };
+
       const nextField = getMissingField(
         updated.items,
         updated.customerName,
@@ -285,13 +360,23 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
 
       setPendingOrder(phone, { ...updated, awaiting: nextField });
       if (nextField === "item") return itemSelectionReply();
+
+      if (nextField === "address" && pending.address) {
+        return textReply(
+          `Great! Deliver to *${pending.address}* like last time? 📍 (or type a new address)`
+        );
+      }
+
       return textReply(getMissingFieldPrompt(nextField));
     }
 
     case "address": {
+      const confirming = isConfirmingPrefill(message);
+      const finalAddress = confirming && pending.address ? pending.address : message;
+
       const updated: PendingOrder = {
         ...pending,
-        address: message,
+        address: finalAddress,
         updatedAt: Date.now(),
       };
       return attemptCreateFromPending(phone, updated);
@@ -302,88 +387,148 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
   }
 }
 
-function recordExchange(phone: string, userMessage: string, reply: BotReply): void {
+function handleOrderLookup(
+  phone: string,
+  message: string,
+  intent: Intent
+): ProcessResult {
+  const orderId = extractOrderId(message);
+  const order = getOrder({ orderId, phone });
+
+  if (!order) {
+    return textReply(formatNoOrderFound());
+  }
+
+  if (intent === "delivery_eta") {
+    return textReply(formatDeliveryEta(order));
+  }
+
+  return [
+    textReply(`Here's your order details 👇`),
+    textReply(formatOrderDetails(order)),
+  ];
+}
+
+function recordExchange(phone: string, userMessage: string, result: ProcessResult): void {
   addChatMessage(phone, { role: "user", content: userMessage });
-  const assistantContent =
-    reply.kind === "text"
-      ? reply.text
-      : reply.kind === "menu_list"
-        ? `[menu list] ${reply.body}`
-        : `[buttons] ${reply.body}`;
+
+  const replies = Array.isArray(result) ? result : [result];
+  const assistantContent = replies
+    .map((reply) => {
+      if (reply.kind === "text") return reply.text;
+      if (reply.kind === "menu_list") return `[menu list] ${reply.body}`;
+      return `[buttons] ${reply.body}`;
+    })
+    .join("\n");
+
   addChatMessage(phone, { role: "assistant", content: assistantContent });
 }
 
-function startOrdering(phone: string): BotReply {
-  const existing = getPendingOrder(phone);
-  setPendingOrder(
-    phone,
-    emptyPending({
-      items: existing?.items ?? [],
-      customerName: existing?.customerName,
-      address: existing?.address,
-    })
-  );
-  return itemSelectionReply();
-}
-
-export async function processMessage(
+async function handleGroqIntent(
   phone: string,
-  rawMessage: string
-): Promise<BotReply> {
-  const message = normalizeUserMessage(rawMessage);
-  if (!message) {
-    return textReply("I didn't catch that. What would you like to order? 🍕");
-  }
-
-  if (looksLikeTrackingRequest(message)) {
-    const orderId = extractOrderId(message);
-    const order = getOrder({ orderId, phone });
-    const reply = textReply(
-      order ? formatOrderDetails(order) : "No record found for that order."
-    );
-    recordExchange(phone, message, reply);
-    return reply;
-  }
-
-  if (looksLikeMenuRequest(message)) {
-    const reply = startOrdering(phone);
-    recordExchange(phone, message, reply);
-    return reply;
-  }
-
-  const pendingReply = handlePendingSession(phone, message);
-  if (pendingReply) {
-    recordExchange(phone, message, pendingReply);
-    return pendingReply;
-  }
-
-  const menuPick = resolveMenuSelection(message);
-  if (menuPick && isValidMenuItem(menuPick)) {
-    setPendingOrder(phone, {
-      items: getPendingOrder(phone)?.items ?? [],
-      selectedItem: menuPick,
-      awaiting: "quantity",
-      updatedAt: Date.now(),
-    });
-    const reply = quantityReply(menuPick);
-    recordExchange(phone, message, reply);
-    return reply;
-  }
-
-  if (looksLikeGreeting(message)) {
-    const reply = startOrdering(phone);
-    recordExchange(phone, message, reply);
-    return reply;
-  }
-
+  message: string,
+  intent: Intent
+): Promise<ProcessResult> {
   const history = getChatHistory(phone);
-  const { reply, orderCreated } = await chatWithGroq(phone, message, history);
+  const intentHint =
+    intent === "greeting"
+      ? "greeting — welcome them to the shop warmly, do NOT send a menu"
+      : intent === "recommendation"
+        ? "recommendation — share hot sellers conversationally, offer menu with [OFFER_MENU] if appropriate"
+        : undefined;
+
+  const { reply, orderCreated, offerMenu, orderReceipt } = await chatWithGroq(
+    phone,
+    message,
+    history,
+    intentHint
+  );
 
   if (orderCreated) {
     clearPendingOrder(phone);
   }
 
-  const botReply = textReply(reply);
-  recordExchange(phone, message, botReply);
-  return botReply;
+  const replies: BotReply[] = [textReply(reply)];
+  if (orderCreated && orderReceipt) {
+    replies.push(textReply(orderReceipt));
+  }
+  if (offerMenu || intent === "recommendation") {
+    replies.push(menuOfferButton());
+  }
+
+  return replies.length > 1 ? replies : replies[0]!;
+}
+
+export async function processMessage(
+  phone: string,
+  rawMessage: string
+): Promise<ProcessResult> {
+  const message = normalizeUserMessage(rawMessage);
+  if (!message) {
+    return textReply("Sorry, I missed that — what were you looking for? 🍕");
+  }
+
+  const intent = classifyIntent(message);
+  const history = getChatHistory(phone);
+
+  if (shouldShowMenu(message, intent, history)) {
+    const reply = startOrdering(phone);
+    recordExchange(phone, message, reply);
+    return reply;
+  }
+
+  if (
+    intent === "order_receipt" ||
+    intent === "order_tracking" ||
+    intent === "delivery_eta"
+  ) {
+    const reply = handleOrderLookup(phone, message, intent);
+    recordExchange(phone, message, reply);
+    return reply;
+  }
+
+  if (intent === "natural_order") {
+    const pizzaNames = extractPizzaNamesFromMessage(message);
+    if (pizzaNames.length > 0) {
+      const reply = startNaturalOrder(phone, pizzaNames);
+      recordExchange(phone, message, reply);
+      return reply;
+    }
+  }
+
+  const pending = getPendingOrder(phone);
+  if (pending?.awaiting && isCartAction(message)) {
+    const pendingReply = handlePendingSession(phone, message);
+    if (pendingReply) {
+      recordExchange(phone, message, pendingReply);
+      return pendingReply;
+    }
+  }
+
+  if (intent === "ordering" && isCartAction(message)) {
+    if (!pending) {
+      setPendingOrder(phone, emptyPending());
+    }
+    const pendingReply = handlePendingSession(phone, message);
+    if (pendingReply) {
+      recordExchange(phone, message, pendingReply);
+      return pendingReply;
+    }
+  }
+
+  const groqIntents: Intent[] = [
+    "greeting",
+    "recommendation",
+    "general",
+  ];
+
+  if (groqIntents.includes(intent) || (pending?.awaiting && !isCartAction(message))) {
+    const reply = await handleGroqIntent(phone, message, intent);
+    recordExchange(phone, message, reply);
+    return reply;
+  }
+
+  const reply = await handleGroqIntent(phone, message, "general");
+  recordExchange(phone, message, reply);
+  return reply;
 }

@@ -1,9 +1,19 @@
 import type { Request, Response } from "express";
+import {
+  ADD_ANOTHER_ID,
+  DONE_ORDER_ID,
+  parseQuantityInput,
+  resolveMenuSelection,
+  SHOW_MENU_ID,
+} from "../config/menu.js";
 import { env } from "../config/env.js";
-import { resolveMenuSelection } from "../config/menu.js";
 import { processMessage } from "../services/conversationService.js";
 import { sanitizePhone } from "../utils/sanitize.js";
-import { markMessageAsRead, sendBotReply, sendTextMessage } from "./client.js";
+import {
+  markMessageAsRead,
+  sendBotReplies,
+  sendTextMessage,
+} from "./client.js";
 
 const processedMessageIds = new Set<string>();
 const MAX_PROCESSED_IDS = 1000;
@@ -61,6 +71,19 @@ function extractMessageText(message: WhatsAppMessage): string | null {
   return null;
 }
 
+function normalizeIncomingText(rawText: string): string {
+  const lower = rawText.trim().toLowerCase();
+  if (
+    lower === SHOW_MENU_ID ||
+    lower === ADD_ANOTHER_ID ||
+    lower === DONE_ORDER_ID ||
+    parseQuantityInput(lower)
+  ) {
+    return lower;
+  }
+  return resolveMenuSelection(rawText) ?? rawText;
+}
+
 function extractIncomingMessages(body: unknown): IncomingMessage[] {
   const messages: IncomingMessage[] = [];
   const payload = body as {
@@ -79,11 +102,10 @@ function extractIncomingMessages(body: unknown): IncomingMessage[] {
         const rawText = extractMessageText(message);
         if (!rawText) continue;
 
-        const resolved = resolveMenuSelection(rawText) ?? rawText;
         messages.push({
           id: message.id,
           from: message.from,
-          text: resolved,
+          text: normalizeIncomingText(rawText),
         });
       }
     }
@@ -134,15 +156,18 @@ export function handleWebhook(req: Request, res: Response): void {
     void (async () => {
       try {
         await markMessageAsRead(message.id);
-        const reply = await processMessage(phone, text);
-        await sendBotReply(phone, reply);
-        console.log(`[webhook] Reply sent to ${phone} (${reply.kind})`);
+        const result = await processMessage(phone, text);
+        await sendBotReplies(phone, result);
+        const kinds = (Array.isArray(result) ? result : [result])
+          .map((r) => r.kind)
+          .join(", ");
+        console.log(`[webhook] Reply sent to ${phone} (${kinds})`);
       } catch (error) {
         console.error("Failed to process message:", error);
         try {
           await sendTextMessage(
             phone,
-            "Sorry, something went wrong. Please try again in a moment. 🍕"
+            "Oops, something went wrong on my end — give me a sec and try again? 🍕"
           );
         } catch (sendError) {
           console.error("Failed to send error reply:", sendError);
