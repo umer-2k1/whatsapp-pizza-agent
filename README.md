@@ -1,182 +1,104 @@
-# WhatsApp AI Pizza Ordering Agent
+# WhatsApp Pizza Agent
 
-Conversational pizza ordering over WhatsApp powered by Groq AI, Node.js, TypeScript, and SQLite. Single-shot ordering with no cart — place, confirm, and track orders in natural language.
+**A conversational pizza ordering agent that runs entirely on WhatsApp** — no app, no website, no phone calls. Customers message a business number, place orders in natural language, and get confirmations back in the same chat.
 
-## Prerequisites
+---
 
-- [Node.js](https://nodejs.org/) 20+
-- [pnpm](https://pnpm.io/installation) 10+
-- [Groq API key](https://console.groq.com/)
-- [Meta Developer](https://developers.facebook.com/) account with WhatsApp Cloud API access
-- [ngrok](https://ngrok.com/) (for local webhook testing)
+## Demo
 
-## Quick start
+> **[Watch the demo →](https://your-demo-video-link-here)**  
+> _Replace the link above with a Loom, YouTube, or screen recording of the agent in action._
 
-```bash
-pnpm install
-cp .env.example .env
-# Fill in your API keys in .env
-pnpm dev
-```
+---
 
-> **Note:** This project uses `better-sqlite3`, a native Node addon. `package.json` includes `pnpm.onlyBuiltDependencies` so pnpm runs its install script. If you see a "Could not locate the bindings file" error, run `rm -rf node_modules && pnpm install` again.
+## The Problem
 
-In a second terminal (only if not using `NGROK_AUTHTOKEN` or `WEBHOOK_URL`):
+Small food businesses lose orders when ordering is friction-heavy. Phone lines get busy, websites feel impersonal, and generic chatbots feel robotic. Customers already live on WhatsApp — they just want to order pizza the way they message a friend.
 
-```bash
-ngrok http 3000
-```
+## What It Does
 
-Register the ngrok HTTPS URL + `/webhook` in the Meta WhatsApp dashboard.
+This agent turns a WhatsApp business number into a full ordering channel. Customers can:
 
-### Webhook URL (ngrok in a separate terminal)
+- Browse the menu via interactive lists and buttons
+- Order in plain language — _"2 pepperoni and a BBQ chicken to DHA Phase 5"_
+- Build a multi-item cart with quantity selection
+- Get personalized recommendations from a human-sounding staff persona
+- Track orders by phone number or order ID
+- Receive formatted receipts with totals and delivery details
 
-1. Start the server:
-   ```bash
-   pnpm dev
-   ```
+Repeat customers get their name and address pre-filled. First-time customers are guided conversationally until every detail is captured — nothing is assumed or fabricated.
 
-2. In **another terminal**, start ngrok:
-   ```bash
-   ngrok http 3000
-   ```
+## Why It Exists
 
-The server auto-detects ngrok via its local API (`http://127.0.0.1:4040`) and prints the **HTTPS** webhook URL:
+Most WhatsApp bot demos are rigid keyword matchers or generic AI wrappers with no real order logic behind them. This project shows what a **production-shaped** conversational commerce agent looks like:
 
-```
-Webhook URL (register in Meta): https://abc123.ngrok-free.app/webhook
-```
+- Structured ordering flows alongside free-form AI
+- Tool-calling AI that only creates orders when all required fields are confirmed
+- Persistent order storage with real IDs and lookup
+- Native WhatsApp interactive UI (lists, reply buttons)
+- Intent routing so greetings, menus, tracking, and orders each get the right response
 
-If ngrok starts after the server, either restart `pnpm dev` or run:
+It's a reference implementation for **AI + WhatsApp Cloud API + transactional backend** — built to be extended, not just demoed.
 
-```bash
-curl http://localhost:3000/health
-```
-
-For the full step-by-step WhatsApp setup and testing guide, see [docs/SETUP_AND_TESTING_GUIDE.md](docs/SETUP_AND_TESTING_GUIDE.md).
-
-## Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `PORT` | Server port (default: `3000`) |
-| `GROQ_API_KEY` | Groq API key |
-| `WHATSAPP_ACCESS_TOKEN` | Meta WhatsApp Cloud API access token |
-| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp phone number ID from Meta dashboard |
-| `WHATSAPP_VERIFY_TOKEN` | Custom verify token for webhook handshake |
-| `DATABASE_PATH` | SQLite database path (default: `./data/orders.db`) |
-| `WEBHOOK_URL` | Optional manual override for Meta webhook URL |
-| `NGROK_API_URL` | ngrok local API (default: `http://127.0.0.1:4040`) |
-
-## WhatsApp Cloud API setup
-
-1. Go to [Meta for Developers](https://developers.facebook.com/) and create an app.
-2. Add the **WhatsApp** product to your app.
-3. In **WhatsApp → API Setup**, note:
-   - **Temporary access token** (or generate a permanent one)
-   - **Phone number ID**
-4. Choose a **Verify Token** (any random string) and set it in `.env` as `WHATSAPP_VERIFY_TOKEN`.
-5. Start the server with `pnpm dev`, expose it with ngrok, then set your webhook URL:
-   ```
-   https://<your-ngrok-id>.ngrok.io/webhook
-   ```
-6. Subscribe to the **messages** webhook field.
-7. Add your test phone number under **WhatsApp → API Setup → To** field.
-
-### Verify webhook with curl
-
-```bash
-curl "http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=YOUR_VERIFY_TOKEN&hub.challenge=test123"
-```
-
-Expected response: `test123`
-
-## Menu
-
-| Pizza | Price (PKR) |
-|-------|-------------|
-| Margherita | 1200 |
-| Pepperoni | 1500 |
-| BBQ Chicken | 1700 |
-| Veggie | 1100 |
-
-## Conversation flows
-
-### Single-shot order
+## How It Works
 
 ```
-User: I want 2 pepperoni pizzas to DHA Phase 5, name is Ali
-Bot:  🍕 Order Confirmed!
-      Order ID: PZ839201
-      Name: Ali
-      Items: 2x Pepperoni Pizza
-      Total: 3000 PKR
-      ...
+Customer (WhatsApp)
+       ↓
+Meta WhatsApp Cloud API
+       ↓
+Express webhook  →  Intent classifier
+       ↓                    ↓
+Conversation service  ←  Groq AI (tool calls)
+       ↓
+Order service  →  SQLite
+       ↓
+WhatsApp reply (text / buttons / menu list)
 ```
 
-### Multi-turn (missing details)
+**Incoming message** → sanitized and classified by intent (greeting, menu, order, tracking, recommendation).
 
-```
-User: 2 pepperoni please
-Bot:  What's your name for the order?
-User: Ali
-Bot:  Please share your delivery address 📍
-User: DHA Phase 5
-Bot:  🍕 Order Confirmed! ...
-```
+**Guided flow** → interactive menus and buttons walk the customer through item selection, quantities, and checkout — with a live cart summary.
 
-### Order tracking
+**Natural language** → Groq handles open-ended conversation, collects missing details, and calls `create_order` or `get_order` tools only when criteria are met.
 
-```
-User: Where is my order?
-Bot:  📦 Order Details (latest order for your phone)
+**Outgoing reply** → formatted as plain text, WhatsApp reply buttons, or scrollable menu lists depending on context.
 
-User: Track PZ839201
-Bot:  📦 Order Details (or "No record found for that order.")
-```
+Orders are stored in SQLite with generated IDs (`PZ######`), linked to the customer's WhatsApp phone number for tracking.
 
-### Recommendations
+## Key Capabilities
 
-```
-User: Suggest something spicy
-Bot:  Recommends 1–3 items from the menu with prices
-```
+| Area | Behavior |
+|------|----------|
+| **Ordering** | Multi-item cart, quantity buttons, natural-language pizza extraction |
+| **AI persona** | Configurable shop name and staff identity — replies like a real team member |
+| **Validation** | Orders require explicit name, address, and items — no silent defaults |
+| **Repeat customers** | Previous name/address offered for one-tap confirmation |
+| **Tracking** | Lookup by order ID or latest order for the phone number |
+| **Interactive UI** | WhatsApp menu lists, reply buttons, and structured receipts |
+| **Safety** | Input sanitization, webhook verification, duplicate message deduplication |
 
-### Off-topic
+## Tech Stack
 
-```
-User: Who is the president?
-Bot:  Politely redirects to pizza ordering
-```
+| Layer | Technology |
+|-------|------------|
+| Runtime | Node.js, TypeScript |
+| Server | Express |
+| AI | Groq (LLM + function calling) |
+| Messaging | Meta WhatsApp Cloud API |
+| Database | SQLite (`better-sqlite3`) |
+| Validation | Zod |
+| Local dev | ngrok (webhook tunneling) |
 
-## Scripts
+---
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start dev server with hot reload |
-| `pnpm build` | Compile TypeScript to `dist/` |
-| `pnpm start` | Run compiled production build |
+## Setup
 
-## Architecture
+This README focuses on what the project is and how it works. For environment variables, Meta dashboard configuration, webhook registration, and local testing, see the full guide:
 
-```
-WhatsApp User → Meta Cloud API → Express Webhook → Groq AI → Order Service → SQLite → WhatsApp Reply
-```
+**[Setup & Testing Guide →](docs/SETUP_AND_TESTING_GUIDE.md)**
 
-## API endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/webhook` | Meta webhook verification |
-| POST | `/webhook` | Incoming WhatsApp messages |
-
-## Security notes
-
-- Webhook verify token is validated on GET `/webhook`
-- User messages are sanitized (control chars stripped, 1000 char limit)
-- Phone number comes from WhatsApp metadata only
-- Duplicate webhook deliveries are deduplicated by message ID
+Quick start: `pnpm install` → configure `.env` → `pnpm dev` → expose with ngrok → register webhook in Meta.
 
 ## License
 
