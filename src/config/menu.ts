@@ -99,3 +99,29 @@ export const RECOMMENDATION_TRIGGERS = [
   "what should i eat",
   "hot selling",
 ];
+
+const QTY_BUTTON_PREFIX = "qty_";
+export const ADD_ANOTHER_ID = "add_another";
+export const DONE_ORDER_ID = "done_order";
+
+export function quantityButtonId(qty: number): string {
+  return `${QTY_BUTTON_PREFIX}${qty}`;
+}
+
+export function parseQuantityInput(input: string): number | null {
+  const trimmed = input.trim().toLowerCase();
+  if (trimmed.startsWith(QTY_BUTTON_PREFIX)) {
+    const qty = Number.parseInt(trimmed.slice(QTY_BUTTON_PREFIX.length), 10);
+    return qty > 0 && qty <= 99 ? qty : null;
+  }
+  const qty = Number.parseInt(trimmed, 10);
+  if (!Number.isNaN(qty) && qty > 0 && qty <= 99) return qty;
+  return null;
+}
+
+export function parseActionButton(input: string): "add_another" | "done_order" | null {
+  const trimmed = input.trim().toLowerCase();
+  if (trimmed === ADD_ANOTHER_ID) return "add_another";
+  if (trimmed === DONE_ORDER_ID) return "done_order";
+  return null;
+}

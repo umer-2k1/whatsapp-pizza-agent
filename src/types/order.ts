@@ -32,7 +32,8 @@ export interface PendingOrder {
   items: OrderItemInput[];
   customerName?: string;
   address?: string;
-  awaiting: "name" | "address" | "item" | null;
+  selectedItem?: string;
+  awaiting: "name" | "address" | "item" | "quantity" | "add_more" | null;
   updatedAt: number;
 }
 

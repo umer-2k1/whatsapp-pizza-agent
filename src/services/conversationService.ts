@@ -1,7 +1,16 @@
 import { chatWithGroq } from "../ai/groq.js";
-import { isValidMenuItem, resolveMenuSelection } from "../config/menu.js";
+import {
+  ADD_ANOTHER_ID,
+  DONE_ORDER_ID,
+  isValidMenuItem,
+  parseActionButton,
+  parseQuantityInput,
+  quantityButtonId,
+  resolveMenuSelection,
+} from "../config/menu.js";
 import {
   createOrder,
+  formatCartSummary,
   formatOrderConfirmation,
   formatOrderDetails,
   getMissingField,
@@ -16,9 +25,9 @@ import {
   getPendingOrder,
   setPendingOrder,
 } from "./sessionStore.js";
-import type { PendingOrder } from "../types/order.js";
+import type { OrderItemInput, PendingOrder } from "../types/order.js";
 import type { BotReply } from "../types/reply.js";
-import { menuListReply, textReply } from "../types/reply.js";
+import { buttonReply, menuListReply, textReply } from "../types/reply.js";
 import { sanitizeInput } from "../utils/sanitize.js";
 
 const ORDER_ID_PATTERN = /\bPZ\d{6}\b/i;
@@ -73,37 +82,35 @@ function normalizeUserMessage(rawMessage: string): string {
   return menuSelection ?? sanitized;
 }
 
-function mergePendingField(
-  pending: PendingOrder,
-  message: string
-): PendingOrder {
-  const updated = { ...pending, updatedAt: Date.now() };
-
-  switch (pending.awaiting) {
-    case "name":
-      updated.customerName = message;
-      break;
-    case "address":
-      updated.address = message;
-      break;
-    case "item": {
-      const name = resolveMenuSelection(message) ?? message.trim();
-      if (isValidMenuItem(name)) {
-        updated.items = [{ name, quantity: 1 }];
-      }
-      break;
-    }
-  }
-
-  return updated;
+function emptyPending(overrides?: Partial<PendingOrder>): PendingOrder {
+  return {
+    items: [],
+    awaiting: "item",
+    updatedAt: Date.now(),
+    ...overrides,
+  };
 }
 
-function nextAwaitingField(pending: PendingOrder): PendingOrder["awaiting"] {
-  return getMissingField(
-    pending.items,
-    pending.customerName,
-    pending.address
+function addItemToCart(
+  items: OrderItemInput[],
+  name: string,
+  quantity: number
+): OrderItemInput[] {
+  const copy = items.map((item) => ({ ...item }));
+  const index = copy.findIndex(
+    (item) => item.name.toLowerCase() === name.toLowerCase()
   );
+
+  if (index >= 0) {
+    copy[index] = {
+      ...copy[index],
+      quantity: (copy[index].quantity ?? 1) + quantity,
+    };
+    return copy;
+  }
+
+  copy.push({ name, quantity });
+  return copy;
 }
 
 function itemSelectionReply(): BotReply {
@@ -111,6 +118,39 @@ function itemSelectionReply(): BotReply {
     header: "🍕 Pizza Menu",
     footer: "All prices in PKR",
   });
+}
+
+function quantityReply(pizzaName: string): BotReply {
+  return buttonReply(
+    `How many ${pizzaName} pizzas would you like?`,
+    [
+      { id: quantityButtonId(1), title: "1" },
+      { id: quantityButtonId(2), title: "2" },
+      { id: quantityButtonId(3), title: "3" },
+    ],
+    { footer: "Or type a number (e.g. 5)" }
+  );
+}
+
+function addMoreReply(items: OrderItemInput[]): BotReply {
+  return buttonReply(
+    `${formatCartSummary(items)}\n\nAdd another pizza or finish ordering?`,
+    [
+      { id: ADD_ANOTHER_ID, title: "Add another" },
+      { id: DONE_ORDER_ID, title: "Done ordering" },
+    ],
+    { header: "🛒 Your cart" }
+  );
+}
+
+function resumeItemSelection(phone: string, pending: PendingOrder): BotReply {
+  setPendingOrder(phone, {
+    ...pending,
+    awaiting: "item",
+    selectedItem: undefined,
+    updatedAt: Date.now(),
+  });
+  return itemSelectionReply();
 }
 
 function attemptCreateFromPending(phone: string, pending: PendingOrder): BotReply {
@@ -145,28 +185,145 @@ function handlePendingSession(phone: string, message: string): BotReply | null {
   const pending = getPendingOrder(phone);
   if (!pending || !pending.awaiting) return null;
 
-  const updated = mergePendingField(pending, message);
+  switch (pending.awaiting) {
+    case "item": {
+      const name = resolveMenuSelection(message) ?? message.trim();
+      if (!isValidMenuItem(name)) {
+        return resumeItemSelection(phone, pending);
+      }
 
-  if (pending.awaiting === "item" && updated.items.length === 0) {
-    setPendingOrder(phone, { ...updated, awaiting: "item" });
-    return itemSelectionReply();
+      setPendingOrder(phone, {
+        ...pending,
+        selectedItem: name,
+        awaiting: "quantity",
+        updatedAt: Date.now(),
+      });
+      return quantityReply(name);
+    }
+
+    case "quantity": {
+      const qty = parseQuantityInput(message);
+      const pizzaName = pending.selectedItem;
+
+      if (!qty || !pizzaName) {
+        return pizzaName
+          ? quantityReply(pizzaName)
+          : resumeItemSelection(phone, pending);
+      }
+
+      const items = addItemToCart(pending.items, pizzaName, qty);
+      setPendingOrder(phone, {
+        ...pending,
+        items,
+        selectedItem: undefined,
+        awaiting: "add_more",
+        updatedAt: Date.now(),
+      });
+      return addMoreReply(items);
+    }
+
+    case "add_more": {
+      const action = parseActionButton(message);
+      if (action === "add_another") {
+        return resumeItemSelection(phone, { ...pending, items: pending.items });
+      }
+
+      const extraPizza = resolveMenuSelection(message) ?? message.trim();
+      if (isValidMenuItem(extraPizza)) {
+        setPendingOrder(phone, {
+          ...pending,
+          selectedItem: extraPizza,
+          awaiting: "quantity",
+          updatedAt: Date.now(),
+        });
+        return quantityReply(extraPizza);
+      }
+
+      if (action === "done_order") {
+        if (pending.items.length === 0) {
+          return resumeItemSelection(phone, pending);
+        }
+
+        const nextField = getMissingField(
+          pending.items,
+          pending.customerName,
+          pending.address
+        );
+
+        if (!nextField) {
+          return attemptCreateFromPending(phone, pending);
+        }
+
+        setPendingOrder(phone, {
+          ...pending,
+          awaiting: nextField,
+          updatedAt: Date.now(),
+        });
+
+        if (nextField === "item") return itemSelectionReply();
+        return textReply(getMissingFieldPrompt(nextField));
+      }
+
+      return addMoreReply(pending.items);
+    }
+
+    case "name": {
+      const updated: PendingOrder = {
+        ...pending,
+        customerName: message,
+        updatedAt: Date.now(),
+      };
+      const nextField = getMissingField(
+        updated.items,
+        updated.customerName,
+        updated.address
+      );
+
+      if (!nextField) {
+        return attemptCreateFromPending(phone, updated);
+      }
+
+      setPendingOrder(phone, { ...updated, awaiting: nextField });
+      if (nextField === "item") return itemSelectionReply();
+      return textReply(getMissingFieldPrompt(nextField));
+    }
+
+    case "address": {
+      const updated: PendingOrder = {
+        ...pending,
+        address: message,
+        updatedAt: Date.now(),
+      };
+      return attemptCreateFromPending(phone, updated);
+    }
+
+    default:
+      return null;
   }
-
-  const awaiting = nextAwaitingField(updated);
-  if (awaiting) {
-    setPendingOrder(phone, { ...updated, awaiting });
-    if (awaiting === "item") return itemSelectionReply();
-    return textReply(getMissingFieldPrompt(awaiting));
-  }
-
-  return attemptCreateFromPending(phone, updated);
 }
 
 function recordExchange(phone: string, userMessage: string, reply: BotReply): void {
   addChatMessage(phone, { role: "user", content: userMessage });
   const assistantContent =
-    reply.kind === "text" ? reply.text : `[menu list] ${reply.body}`;
+    reply.kind === "text"
+      ? reply.text
+      : reply.kind === "menu_list"
+        ? `[menu list] ${reply.body}`
+        : `[buttons] ${reply.body}`;
   addChatMessage(phone, { role: "assistant", content: assistantContent });
+}
+
+function startOrdering(phone: string): BotReply {
+  const existing = getPendingOrder(phone);
+  setPendingOrder(
+    phone,
+    emptyPending({
+      items: existing?.items ?? [],
+      customerName: existing?.customerName,
+      address: existing?.address,
+    })
+  );
+  return itemSelectionReply();
 }
 
 export async function processMessage(
@@ -189,7 +346,7 @@ export async function processMessage(
   }
 
   if (looksLikeMenuRequest(message)) {
-    const reply = itemSelectionReply();
+    const reply = startOrdering(phone);
     recordExchange(phone, message, reply);
     return reply;
   }
@@ -200,8 +357,21 @@ export async function processMessage(
     return pendingReply;
   }
 
+  const menuPick = resolveMenuSelection(message);
+  if (menuPick && isValidMenuItem(menuPick)) {
+    setPendingOrder(phone, {
+      items: getPendingOrder(phone)?.items ?? [],
+      selectedItem: menuPick,
+      awaiting: "quantity",
+      updatedAt: Date.now(),
+    });
+    const reply = quantityReply(menuPick);
+    recordExchange(phone, message, reply);
+    return reply;
+  }
+
   if (looksLikeGreeting(message)) {
-    const reply = itemSelectionReply();
+    const reply = startOrdering(phone);
     recordExchange(phone, message, reply);
     return reply;
   }

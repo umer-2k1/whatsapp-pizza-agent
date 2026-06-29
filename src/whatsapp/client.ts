@@ -68,13 +68,54 @@ export async function sendInteractiveListMessage(
   });
 }
 
+export async function sendInteractiveButtonMessage(
+  to: string,
+  payload: {
+    body: string;
+    buttons: Array<{ id: string; title: string }>;
+    header?: string;
+    footer?: string;
+  }
+): Promise<void> {
+  const interactive: Record<string, unknown> = {
+    type: "button",
+    body: { text: payload.body },
+    action: {
+      buttons: payload.buttons.map((btn) => ({
+        type: "reply",
+        reply: { id: btn.id, title: btn.title },
+      })),
+    },
+  };
+
+  if (payload.header) {
+    interactive.header = { type: "text", text: payload.header };
+  }
+  if (payload.footer) {
+    interactive.footer = { text: payload.footer };
+  }
+
+  await postMessage({
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "interactive",
+    interactive,
+  });
+}
+
 export async function sendBotReply(to: string, reply: BotReply): Promise<void> {
   if (reply.kind === "text") {
     await sendTextMessage(to, reply.text);
     return;
   }
 
-  await sendInteractiveListMessage(to, buildMenuListPayload(reply));
+  if (reply.kind === "menu_list") {
+    await sendInteractiveListMessage(to, buildMenuListPayload(reply));
+    return;
+  }
+
+  await sendInteractiveButtonMessage(to, reply);
 }
 
 export async function markMessageAsRead(messageId: string): Promise<void> {

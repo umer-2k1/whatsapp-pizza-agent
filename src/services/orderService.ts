@@ -1,5 +1,6 @@
 import {
   calculateTotal,
+  getMenuItem,
   isValidMenuItem,
   resolveOrderItems,
 } from "../config/menu.js";
@@ -89,6 +90,27 @@ export function formatItemsSummary(items: Order["items"]): string {
   return items
     .map((item) => `${item.quantity}x ${item.name} Pizza`)
     .join(", ");
+}
+
+export function formatCartSummary(items: OrderItemInput[]): string {
+  if (items.length === 0) {
+    return "Your cart is empty.";
+  }
+
+  const lines = items.map((item) => {
+    const qty = item.quantity && item.quantity > 0 ? item.quantity : 1;
+    const menuItem = getMenuItem(item.name);
+    const lineTotal = menuItem ? menuItem.price * qty : 0;
+    return `• ${qty}x ${item.name} — ${lineTotal} PKR`;
+  });
+
+  const total = items.reduce((sum, item) => {
+    const qty = item.quantity && item.quantity > 0 ? item.quantity : 1;
+    const menuItem = getMenuItem(item.name);
+    return sum + (menuItem ? menuItem.price * qty : 0);
+  }, 0);
+
+  return ["Your order so far:", ...lines, "", `Subtotal: ${total} PKR`].join("\n");
 }
 
 export function formatOrderConfirmation(order: Order): string {
